@@ -1,6 +1,6 @@
--- [[ OPTIMIZED HITBOX EXPANDER - BAREBONES EDITION ]]
--- Focus: Raw Performance, Low Memory, FPS Stability.
--- Features: Size Enforcement, Toggle (L), No visual bloat.
+-- [[ OPTIMIZED HITBOX EXPANDER - DUAL TARGET EDITION ]]
+-- Focus: Raw Performance, Low Memory.
+-- Features: RootPart Resizing + Fake Head Hitbox (Visuals stay normal).
 
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
@@ -10,95 +10,143 @@ local LocalPlayer = Players.LocalPlayer
 -- [[ CONFIGURATION ]]
 local SETTINGS = {
 	TOGGLE_KEY = Enum.KeyCode.L,
-	TARGET_PART = "HumanoidRootPart",
-	SIZE = Vector3.new(15, 15, 15),
 	TRANSPARENCY = 0.9,
-	CAN_COLLIDE = false,
+	
+	-- Specific sizes for parts
+	ROOT_SIZE = Vector3.new(4, 2, 2.5),
+	HEAD_SIZE = Vector3.new(3, 2, 2.5),
 }
 
 -- [[ GLOBAL STATE MANAGEMENT ]]
--- Ensures re-executing the script cleans up the previous instance to prevent memory leaks.
 local Data = getgenv().HitboxOptimized
 if Data and Data.Cleanup then
 	Data.Cleanup()
 end
 
 Data = {
-	Connections = {}, -- Stores raw RBXScriptConnections
-	Limbs = {},       -- Stores original properties for restoring
+	Connections = {}, 
+	Originals = {}, -- Stores original sizes for restoration
+	FakeParts = {}, -- Stores the fake head parts to destroy later
 	Running = false,
 }
 getgenv().HitboxOptimized = Data
 
 -- [[ HELPER FUNCTIONS ]]
 
+-- 1. RESTORE: Returns parts to normal when script stops
 local function RestoreLimb(part)
 	if not part then return end
-	local original = Data.Limbs[part]
+	
+	-- If it's a fake part we made, destroy it
+	if Data.FakeParts[part] then
+		part:Destroy()
+		Data.FakeParts[part] = nil
+		return
+	end
+
+	-- If it's a real part we resized, reset it
+	local original = Data.Originals[part]
 	if original then
-		part.Size = original.Size
-		part.Transparency = original.Transparency
-		part.CanCollide = original.CanCollide
-		Data.Limbs[part] = nil
+		part.Size = original
+		part.Transparency = 0 -- Assuming default is opaque, or save specific if needed
+		part.CanCollide = true
+		Data.Originals[part] = nil
 	end
 end
 
-local function EnforceProperties(part)
-	if not part or not Data.Running then return end
+-- 2. CREATE FAKE HEAD: Welds a hitbox to the head without resizing the real head
+local function CreateFakeHead(character, realHead)
+	if not Data.Running then return end
+	if character:FindFirstChild("HitboxHead") then return end -- Already exists
+
+	local fakeHead = Instance.new("Part")
+	fakeHead.Name = "HitboxHead" -- Unique name to avoid conflicts
+	fakeHead.Size = SETTINGS.HEAD_SIZE
+	fakeHead.Transparency = SETTINGS.TRANSPARENCY
+	fakeHead.CanCollide = false
+	fakeHead.Massless = true
+	fakeHead.Material = Enum.Material.Plastic
+	fakeHead.Color = Color3.fromRGB(255, 0, 0) -- Visual debug (red), relies on transparency
 	
-	-- Force properties
-	if part.Size ~= SETTINGS.SIZE then part.Size = SETTINGS.SIZE end
-	if part.Transparency ~= SETTINGS.TRANSPARENCY then part.Transparency = SETTINGS.TRANSPARENCY end
-	if part.CanCollide ~= SETTINGS.CAN_COLLIDE then part.CanCollide = SETTINGS.CAN_COLLIDE end
+	-- Initial Position
+	fakeHead.CFrame = realHead.CFrame
+
+	-- Weld to real head so it moves with animations
+	local weld = Instance.new("WeldConstraint")
+	weld.Part0 = realHead
+	weld.Part1 = fakeHead
+	weld.Parent = fakeHead
+
+	-- IMPORTANT: Parent to Character so damage scripts register it as part of the enemy
+	fakeHead.Parent = character
+	
+	-- Track it for cleanup
+	Data.FakeParts[fakeHead] = true
+	
+	-- Add a heartbeat connection to ensure it stays attached/correct (Lightweight)
+	-- Some games delete "unknown" parts, so we watch it.
+	local conn = fakeHead:GetPropertyChangedSignal("Parent"):Connect(function()
+		if not fakeHead.Parent then
+			Data.FakeParts[fakeHead] = nil
+		end
+	end)
+	table.insert(Data.Connections, conn)
 end
 
-local function HookPart(part)
-	if not part or Data.Limbs[part] then return end -- Already hooked
-	
-	-- Save original state (Memory Friendly: Only simple Vector3/Numbers)
-	Data.Limbs[part] = {
-		Size = part.Size,
-		Transparency = part.Transparency,
-		CanCollide = part.CanCollide
-	}
+-- 3. HOOK ROOT PART: Resizes the actual HRP
+local function HookRootPart(part)
+	if not part or Data.Originals[part] then return end 
 
-	-- Apply immediately
-	EnforceProperties(part)
+	-- Save original size
+	Data.Originals[part] = part.Size
 
-	-- [[ OPTIMIZATION: Single Signal Connection ]]
-	-- We only watch "Size" because that's what games usually fight back against.
-	-- We re-apply all properties if Size changes to save Connection memory.
+	-- Apply Size
+	part.Size = SETTINGS.ROOT_SIZE
+	part.Transparency = SETTINGS.TRANSPARENCY
+	part.CanCollide = false
+
+	-- Keep it forced (Game fightback loop)
 	local conn = part:GetPropertyChangedSignal("Size"):Connect(function()
-		if Data.Running then
-			EnforceProperties(part)
+		if Data.Running and part.Size ~= SETTINGS.ROOT_SIZE then
+			part.Size = SETTINGS.ROOT_SIZE
+			part.Transparency = SETTINGS.TRANSPARENCY
+			part.CanCollide = false
 		end
 	end)
 	
 	table.insert(Data.Connections, conn)
 end
 
+-- 4. CHARACTER SETUP: Orchestrates the logic per character
 local function SetupCharacter(char)
 	if not char then return end
 	
-	-- Wait for the part briefly, but don't hang forever (Memory safety)
-	local part = char:WaitForChild(SETTINGS.TARGET_PART, 5)
-	if part then
-		HookPart(part)
-	end
+	-- A. Handle HumanoidRootPart
+	task.spawn(function()
+		local hrp = char:WaitForChild("HumanoidRootPart", 5)
+		if hrp then
+			HookRootPart(hrp)
+		end
+	end)
+
+	-- B. Handle Head (Fake Part Strategy)
+	task.spawn(function()
+		local head = char:WaitForChild("Head", 5)
+		if head then
+			CreateFakeHead(char, head)
+		end
+	end)
 end
 
 local function SetupPlayer(plr)
-	if plr == LocalPlayer then return end -- Skip self
+	if plr == LocalPlayer then return end -- Ignore self
 
-	-- Handle current character
 	if plr.Character then
-		task.spawn(SetupCharacter, plr.Character)
+		SetupCharacter(plr.Character)
 	end
 
-	-- Handle future characters (Respawn)
 	local conn = plr.CharacterAdded:Connect(function(char)
-		-- Small delay to ensure geometry is ready
-		task.delay(0.2, SetupCharacter, char)
+		task.delay(0.5, SetupCharacter, char) -- Slight delay for mesh loading
 	end)
 	table.insert(Data.Connections, conn)
 end
@@ -109,12 +157,10 @@ local function Start()
 	if Data.Running then return end
 	Data.Running = true
 	
-	-- Connect to existing players
 	for _, plr in ipairs(Players:GetPlayers()) do
 		SetupPlayer(plr)
 	end
 
-	-- Connect to future players (Join)
 	local conn = Players.PlayerAdded:Connect(SetupPlayer)
 	table.insert(Data.Connections, conn)
 	
@@ -124,43 +170,31 @@ end
 local function Stop()
 	Data.Running = false
 	
-	-- clear connections
+	-- Clear connections
 	for _, conn in ipairs(Data.Connections) do
 		if conn.Connected then conn:Disconnect() end
 	end
 	table.clear(Data.Connections)
 
-	-- restore parts
-	for part, _ in pairs(Data.Limbs) do
+	-- Restore Real Parts (RootParts)
+	for part, _ in pairs(Data.Originals) do
 		RestoreLimb(part)
 	end
-	table.clear(Data.Limbs)
+	table.clear(Data.Originals)
+	
+	-- Destroy Fake Parts (Heads)
+	for part, _ in pairs(Data.FakeParts) do
+		if part and part.Parent then
+			part:Destroy()
+		end
+	end
+	table.clear(Data.FakeParts)
 	
 	print("[Hitbox] Disabled")
 end
 
 local function Toggle()
-	if Data.Running then
-		Stop()
-	else
-		Start()
-	end
+	if Data.Running then Stop() else Start() end
 end
 
--- [[ INPUT HANDLING ]]
-local inputConn = UserInputService.InputBegan:Connect(function(input, gameProcessed)
-	if not gameProcessed and input.KeyCode == SETTINGS.TOGGLE_KEY then
-		Toggle()
-	end
-end)
-table.insert(Data.Connections, inputConn)
-
--- [[ CLEANUP EXPORT ]]
-Data.Cleanup = function()
-	Stop()
-	if inputConn.Connected then inputConn:Disconnect() end
-	getgenv().HitboxOptimized = nil
-end
-
--- Initialize
-Start()
+-- [[ INPUT HANDLING
