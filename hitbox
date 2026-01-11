@@ -1,102 +1,105 @@
+-- [[ HITBOX EXTENDER CORE ]]
 local Players = game:GetService("Players")
 local localPlayer = Players.LocalPlayer
-local UserInputService = game:GetService("UserInputService")
 
--- [[ HARD-CODED SETTINGS ]]
-local TARGET_LIMB = "HumanoidRootPart"
-local LIMB_SIZE = 5
-local LIMB_TRANSPARENCY = 0.5
-local WALL_THICKNESS_DIVISOR = 1.25 -- This makes the Z-axis 4 studs if size is 5
-local TOGGLE_KEY = Enum.KeyCode.L
+local LimbExtender = {}
+LimbExtender.__index = LimbExtender
 
-local limbExtenderData = getgenv().limbExtenderData or {}
-getgenv().limbExtenderData = limbExtenderData
-limbExtenderData.Running = limbExtenderData.Running or false
-limbExtenderData.SpoofedParts = limbExtenderData.SpoofedParts or setmetatable({}, { __mode = "k" })
+-- Standardized Settings for the UI to talk to
+local DEFAULTS = {
+    TOGGLE = "L",
+    TARGET_LIMB = "HumanoidRootPart",
+    LIMB_SIZE = 5,
+    LIMB_TRANSPARENCY = 0.5,
+    LIMB_CAN_COLLIDE = false,
+    TEAM_CHECK = false,
+    FORCEFIELD_CHECK = false,
+    RESET_LIMB_ON_DEATH2 = false,
+    USE_HIGHLIGHT = false, -- Deleted rendering logic for this to save FPS
+}
 
--- [[ ONE-TIME PERFORMANCE BYPASS ]]
--- Wrapped in a safety check to prevent the "nil value" error on your executor
-if not limbExtenderData.HookInstalled then
+function LimbExtender.new(userSettings)
+    local self = setmetatable({}, LimbExtender)
+    self._settings = userSettings or DEFAULTS
+    self._running = false
+    self._connections = {}
+    self._spoofTable = setmetatable({}, { __mode = "k" }) -- Weak table for performance
+    
+    -- Metatable Hook (Bypass) with Safety Check
     local grm = getrawmetatable or nil
     local sro = setreadonly or make_writeable or nil
     if grm and sro then
-        local mt = grm(game)
-        if setreadonly then setreadonly(mt, false) else make_writeable(mt) end
-        local oldIndex = mt.__index
-        mt.__index = function(self, key)
-            if key == "Size" and not checkcaller() then
-                local savedSize = limbExtenderData.SpoofedParts[self]
-                if savedSize then return savedSize end
+        pcall(function()
+            local mt = grm(game)
+            if setreadonly then setreadonly(mt, false) else make_writeable(mt) end
+            local oldIndex = mt.__index
+            mt.__index = function(obj, key)
+                if key == "Size" and not checkcaller() and self._spoofTable[obj] then
+                    return self._spoofTable[obj]
+                end
+                return oldIndex(obj, key)
             end
-            return oldIndex(self, key)
-        end
-        if setreadonly then setreadonly(mt, true) else make_readonly(mt) end
-        limbExtenderData.HookInstalled = true
+            if setreadonly then setreadonly(mt, true) else make_readonly(mt) end
+        end)
     end
-end
-
--- [[ CORE FUNCTIONS ]]
-local function modifyLimb(part)
-    if not part or not part:IsA("BasePart") then return end
     
-    -- Save original size so we can spoof it (hide it from anti-cheat)
-    limbExtenderData.SpoofedParts[part] = part.Size
+    return self
+end
+
+function LimbExtender:Get(key) return self._settings[key] end
+
+function LimbExtender:Set(key, value)
+    self._settings[key] = value
+    if self._running then self:Restart() end
+end
+
+function LimbExtender:Toggle(state)
+    if state == nil then state = not self._running end
+    if state then self:Start() else self:Stop() end
+end
+
+function LimbExtender:Modify(char)
+    if not char or not self._running then return end
+    local part = char:WaitForChild(self._settings.TARGET_LIMB, 5)
+    if part and part:IsA("BasePart") then
+        -- Wall Logic: sizeVal / 1.25
+        local size = self._settings.LIMB_SIZE
+        local newSize = Vector3.new(size, size, size / 1.25)
+        
+        self._spoofTable[part] = part.Size -- Hide real size
+        part.Size = newSize
+        part.Transparency = self._settings.LIMB_TRANSPARENCY
+        part.CanCollide = self._settings.LIMB_CAN_COLLIDE
+        part.Massless = true
+    end
+end
+
+function LimbExtender:Start()
+    self._running = true
+    local function setup(plr)
+        if plr == localPlayer then return end
+        if self._settings.TEAM_CHECK and plr.Team == localPlayer.Team then return end
+        
+        plr.CharacterAdded:Connect(function(c) self:Modify(c) end)
+        if plr.Character then self:Modify(plr.Character) end
+    end
     
-    -- Apply "Wall" shape: (5, 5, 4)
-    local newSize = Vector3.new(LIMB_SIZE, LIMB_SIZE, LIMB_SIZE / WALL_THICKNESS_DIVISOR)
-    
-    part.Size = newSize
-    part.Transparency = LIMB_TRANSPARENCY
-    part.CanCollide = false
-    part.Massless = true
+    table.insert(self._connections, Players.PlayerAdded:Connect(setup))
+    for _, p in ipairs(Players:GetPlayers()) do setup(p) end
 end
 
-local function setupCharacter(char)
-    if not char then return end
-    local root = char:WaitForChild(TARGET_LIMB, 5)
-    if root and limbExtenderData.Running then
-        modifyLimb(root)
-    end
+function LimbExtender:Stop()
+    self._running = false
+    for _, v in ipairs(self._connections) do v:Disconnect() end
+    self._connections = {}
+    -- Reset spoofing
+    for part in pairs(self._spoofTable) do self._spoofTable[part] = nil end
 end
 
--- [[ TOGGLE LOGIC ]]
-local function toggle()
-    limbExtenderData.Running = not limbExtenderData.Running
-    print("Hitbox Expander: " .. (limbExtenderData.Running and "ON" or "OFF"))
-    
-    if limbExtenderData.Running then
-        for _, plr in ipairs(Players:GetPlayers()) do
-            if plr ~= localPlayer and plr.Character then
-                setupCharacter(plr.Character)
-            end
-        end
-    else
-        -- Clean up: Refreshing characters usually resets parts naturally
-        -- but we clear the spoof table to be safe
-        for part in pairs(limbExtenderData.SpoofedParts) do
-            limbExtenderData.SpoofedParts[part] = nil
-        end
-    end
+function LimbExtender:Restart()
+    self:Stop()
+    self:Start()
 end
 
--- Listen for the 'L' key to turn it on/off
-UserInputService.InputBegan:Connect(function(input, gpe)
-    if gpe then return end
-    if input.KeyCode == TOGGLE_KEY then
-        toggle()
-    end
-end)
-
--- Watch for new players or respawns
-Players.PlayerAdded:Connect(function(plr)
-    plr.CharacterAdded:Connect(setupCharacter)
-end)
-
-for _, plr in ipairs(Players:GetPlayers()) do
-    if plr ~= localPlayer then
-        plr.CharacterAdded:Connect(setupCharacter)
-        if plr.Character then setupCharacter(plr.Character) end
-    end
-end
-
-print("Limb Extender Loaded. Press 'L' to Toggle.")
+-- THIS IS THE FIX: Returning the table so loadstring doesn't return nil
+return LimbExtender
