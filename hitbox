@@ -155,8 +155,8 @@ function PlayerData:modifyLimbProperties(limb)
 	local sizeVal = parent._settings.LIMB_SIZE or DEFAULTS.LIMB_SIZE
 	
 	-- [[ WALL SHAPE EDIT ]] --
-	-- Z axis is divided by 1.25 to make it thinner (Front to Back)
-	local newSize = Vector3.new(sizeVal, sizeVal, sizeVal / 1.25)
+	-- Z axis is divided by 1.30 to make it thinner (Front to Back)
+	local newSize = Vector3.new(sizeVal, sizeVal, sizeVal / 1.30)
 	
 	local canCollide = parent._settings.LIMB_CAN_COLLIDE
 	local transparency = parent._settings.LIMB_TRANSPARENCY
