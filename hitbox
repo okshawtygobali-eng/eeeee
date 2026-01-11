@@ -1,21 +1,18 @@
--- [[ HITBOX EXTENDER CORE ]]
+-- [[ HITBOX EXTENDER CORE - FIXED FOR FREEZING ]]
 local Players = game:GetService("Players")
 local localPlayer = Players.LocalPlayer
 
 local LimbExtender = {}
 LimbExtender.__index = LimbExtender
 
--- Standardized Settings for the UI to talk to
 local DEFAULTS = {
     TOGGLE = "L",
     TARGET_LIMB = "HumanoidRootPart",
     LIMB_SIZE = 5,
     LIMB_TRANSPARENCY = 0.5,
-    LIMB_CAN_COLLIDE = false,
+    LIMB_CAN_COLLIDE = false, -- STAYS FALSE TO PREVENT STICKING
     TEAM_CHECK = false,
     FORCEFIELD_CHECK = false,
-    RESET_LIMB_ON_DEATH2 = false,
-    USE_HIGHLIGHT = false, -- Deleted rendering logic for this to save FPS
 }
 
 function LimbExtender.new(userSettings)
@@ -23,9 +20,8 @@ function LimbExtender.new(userSettings)
     self._settings = userSettings or DEFAULTS
     self._running = false
     self._connections = {}
-    self._spoofTable = setmetatable({}, { __mode = "k" }) -- Weak table for performance
+    self._spoofTable = setmetatable({}, { __mode = "k" })
     
-    -- Metatable Hook (Bypass) with Safety Check
     local grm = getrawmetatable or nil
     local sro = setreadonly or make_writeable or nil
     if grm and sro then
@@ -42,45 +38,40 @@ function LimbExtender.new(userSettings)
             if setreadonly then setreadonly(mt, true) else make_readonly(mt) end
         end)
     end
-    
     return self
-end
-
-function LimbExtender:Get(key) return self._settings[key] end
-
-function LimbExtender:Set(key, value)
-    self._settings[key] = value
-    if self._running then self:Restart() end
-end
-
-function LimbExtender:Toggle(state)
-    if state == nil then state = not self._running end
-    if state then self:Start() else self:Stop() end
 end
 
 function LimbExtender:Modify(char)
     if not char or not self._running then return end
-    local part = char:WaitForChild(self._settings.TARGET_LIMB, 5)
-    if part and part:IsA("BasePart") then
-        -- Wall Logic: sizeVal / 1.25
-        local size = self._settings.LIMB_SIZE
-        local newSize = Vector3.new(size, size, size / 1.25)
-        
-        self._spoofTable[part] = part.Size -- Hide real size
-        part.Size = newSize
-        part.Transparency = self._settings.LIMB_TRANSPARENCY
-        part.CanCollide = self._settings.LIMB_CAN_COLLIDE
-        part.Massless = true
-    end
+    
+    -- Use task.spawn so if one player's character is weird, it doesn't freeze the script
+    task.spawn(function()
+        local part = char:WaitForChild(self._settings.TARGET_LIMB, 5)
+        if part and part:IsA("BasePart") then
+            local size = self._settings.LIMB_SIZE
+            local newSize = Vector3.new(size, size, size / 1.25)
+            
+            self._spoofTable[part] = part.Size
+            
+            -- [[ THE FIXES FOR FREEZING ]]
+            part.CanCollide = false    -- Prevents hitting the floor
+            part.Massless = true      -- Prevents the part from being too heavy to move
+            part.Size = newSize
+            part.Transparency = self._settings.LIMB_TRANSPARENCY
+        end
+    end)
 end
 
 function LimbExtender:Start()
+    if self._running then return end
     self._running = true
+    
     local function setup(plr)
         if plr == localPlayer then return end
-        if self._settings.TEAM_CHECK and plr.Team == localPlayer.Team then return end
-        
-        plr.CharacterAdded:Connect(function(c) self:Modify(c) end)
+        plr.CharacterAdded:Connect(function(c) 
+            task.wait(0.1) -- Small delay to let physics load
+            self:Modify(c) 
+        end)
         if plr.Character then self:Modify(plr.Character) end
     end
     
@@ -92,14 +83,12 @@ function LimbExtender:Stop()
     self._running = false
     for _, v in ipairs(self._connections) do v:Disconnect() end
     self._connections = {}
-    -- Reset spoofing
+    -- Parts will revert on respawn; clearing table stops the spoof
     for part in pairs(self._spoofTable) do self._spoofTable[part] = nil end
 end
 
-function LimbExtender:Restart()
-    self:Stop()
-    self:Start()
-end
+function LimbExtender:Get(k) return self._settings[k] end
+function LimbExtender:Set(k, v) self._settings[k] = v end
+function LimbExtender:Toggle(v) if v then self:Start() else self:Stop() end end
 
--- THIS IS THE FIX: Returning the table so loadstring doesn't return nil
 return LimbExtender
