@@ -1,19 +1,20 @@
--- [[ AXIOS HITBOX CORE - STABLE VERSION ]]
+-- [[ AXIOS HITBOX CORE - VERSION 2.1 ]]
 local Players = game:GetService("Players")
 local localPlayer = Players.LocalPlayer
 
 local LimbExtender = {}
 LimbExtender.__index = LimbExtender
 
--- Mandatory settings for performance and stability
+-- Settings Template
 local DEFAULTS = {
     TARGET_LIMB = "HumanoidRootPart",
     LIMB_SIZE = 5,
     LIMB_TRANSPARENCY = 0.5,
-    LIMB_CAN_COLLIDE = false, -- Must stay false to prevent freezing
+    LIMB_CAN_COLLIDE = false,
     TEAM_CHECK = false,
 }
 
+-- Standard Initialization (Fixes the "Table Value" error)
 function LimbExtender.new(userSettings)
     local self = setmetatable({}, LimbExtender)
     self._settings = userSettings or DEFAULTS
@@ -21,15 +22,14 @@ function LimbExtender.new(userSettings)
     self._connections = {}
     self._spoofTable = setmetatable({}, { __mode = "k" })
     
-    -- Fix: "Attempt to call a nil value" (Safety check for executors)
-    local grm = getrawmetatable
-    local sro = setreadonly or make_writeable
+    -- Anti-Cheat Bypass Safety Check (Fixes the "Nil Value" error)
+    local grm = getrawmetatable or nil
+    local sro = setreadonly or make_writeable or nil
     
     if grm and sro then
         pcall(function()
             local mt = grm(game)
             local oldIndex = mt.__index
-            
             if setreadonly then setreadonly(mt, false) else make_writeable(mt) end
             mt.__index = function(obj, key)
                 if key == "Size" and not checkcaller() and self._spoofTable[obj] then
@@ -40,29 +40,26 @@ function LimbExtender.new(userSettings)
             if setreadonly then setreadonly(mt, true) else make_readonly(mt) end
         end)
     end
-    
     return self
 end
 
+-- Physics Fix: Prevents players from freezing or getting stuck
 function LimbExtender:Modify(char)
     if not char or not self._running then return end
     
     task.spawn(function()
         local part = char:WaitForChild(self._settings.TARGET_LIMB, 5)
         if part and part:IsA("BasePart") then
-            -- Store real size for the bypass
+            -- Save real size for spoofing
             self._spoofTable[part] = part.Size
             
-            -- Apply "Wall" shape
+            -- Set size with Wall Shape math
             local size = self._settings.LIMB_SIZE
-            local newSize = Vector3.new(size, size, size / 1.25)
+            part.Size = Vector3.new(size, size, size / 1.25)
             
-            -- [[ THE FIX FOR FREEZING ]]
-            -- Massless = True prevents the hitbox from being too heavy to move
-            -- CanCollide = False prevents the hitbox from getting stuck in the floor
-            part.CanCollide = false 
-            part.Massless = true
-            part.Size = newSize
+            -- [[ MANDATORY PHYSICS OVERRIDE ]]
+            part.CanCollide = false -- Prevents floor clipping
+            part.Massless = true   -- Prevents weight freezing
             part.Transparency = self._settings.LIMB_TRANSPARENCY
         end
     end)
@@ -71,16 +68,14 @@ end
 function LimbExtender:Start()
     if self._running then return end
     self._running = true
-    
     local function setup(plr)
         if plr == localPlayer then return end
         plr.CharacterAdded:Connect(function(c) 
-            task.wait(0.2) -- Wait for physics to stabilize
+            task.wait(0.2) -- Safety delay for physics
             self:Modify(c) 
         end)
         if plr.Character then self:Modify(plr.Character) end
     end
-    
     table.insert(self._connections, Players.PlayerAdded:Connect(setup))
     for _, p in ipairs(Players:GetPlayers()) do setup(p) end
 end
@@ -89,18 +84,12 @@ function LimbExtender:Stop()
     self._running = false
     for _, v in ipairs(self._connections) do v:Disconnect() end
     self._connections = {}
-    -- Parts revert on respawn, we just clear spoofing
     for part in pairs(self._spoofTable) do self._spoofTable[part] = nil end
 end
 
--- Map UI calls to functions
 function LimbExtender:Get(k) return self._settings[k] end
 function LimbExtender:Set(k, v) self._settings[k] = v end
 function LimbExtender:Toggle(v) if v then self:Start() else self:Stop() end end
 
--- FIX: "Attempt to call a table value" (Makes LimbExtender() work)
-return setmetatable(LimbExtender, {
-    __call = function(_, opts)
-        return LimbExtender.new(opts)
-    end
-})
+-- Explicitly return the table
+return LimbExtender
