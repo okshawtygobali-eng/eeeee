@@ -23,6 +23,34 @@ local DEFAULTS = {
 local limbExtenderData = getgenv().limbExtenderData or {}
 getgenv().limbExtenderData = limbExtenderData
 
+-- [[ OPTIMIZATION: Centralized Spoof Table ]]
+-- We use a weak table so if a part is destroyed, it is auto-removed from memory
+if not limbExtenderData.SpoofedParts then
+	limbExtenderData.SpoofedParts = setmetatable({}, { __mode = "k" })
+end
+
+-- [[ OPTIMIZATION: One-Time Hook ]]
+-- This installs the hook ONE time. It reads from the table above.
+if not limbExtenderData.HookInstalled then
+    local mt = getrawmetatable(game)
+    setreadonly(mt, false)
+    local oldIndex = mt.__index
+    
+    mt.__index = function(self, key)
+        -- Fast Check: Is the key "Size"? Are we a game script? Is the part in our list?
+        if key == "Size" and not checkcaller() then
+            local savedSize = limbExtenderData.SpoofedParts[self]
+            if savedSize then
+                return savedSize
+            end
+        end
+        return oldIndex(self, key)
+    end
+    
+    setreadonly(mt, true)
+    limbExtenderData.HookInstalled = true
+end
+
 if limbExtenderData.terminateOldProcess and type(limbExtenderData.terminateOldProcess) == "function" then
 	if limbExtenderData.terminateOldProcess then
 		limbExtenderData.terminateOldProcess("FullKill")
@@ -36,6 +64,7 @@ end
 
 local ConnectionManager = limbExtenderData.ConnectionManager
 
+-- Index Bypass (Optional check depending on executor)
 if not limbExtenderData._indexBypassDone then
 	limbExtenderData._indexBypassDone = true
     pcall(function()
@@ -129,6 +158,12 @@ end
 function PlayerData:restoreLimbProperties(limb)
 	local parent = self._parent
 	if not limb then return end
+	
+	-- Stop spoofing this limb
+	if limbExtenderData.SpoofedParts then
+		limbExtenderData.SpoofedParts[limb] = nil
+	end
+
 	local p = parent._limbStore[limb]
 	if not p then return end
 	if p.SizeConnection and typeof(p.SizeConnection) == "RBXScriptConnection" then p.SizeConnection:Disconnect() end
@@ -154,9 +189,9 @@ function PlayerData:modifyLimbProperties(limb)
 	local entry = parent._limbStore[limb]
 	local sizeVal = parent._settings.LIMB_SIZE or DEFAULTS.LIMB_SIZE
 	
-	-- [[ WALL SHAPE EDIT ]] --
-	-- Z axis is divided by 1.30 to make it thinner (Front to Back)
-	local newSize = Vector3.new(sizeVal, sizeVal, sizeVal / 1.30)
+	-- [[ WALL SHAPE CONFIGURATION ]]
+	-- Adjust the divisor (1.35) to change wall thickness.
+	local newSize = Vector3.new(sizeVal, sizeVal, sizeVal / 1.35)
 	
 	local canCollide = parent._settings.LIMB_CAN_COLLIDE
 	local transparency = parent._settings.LIMB_TRANSPARENCY
@@ -187,23 +222,11 @@ end
 
 function PlayerData:spoofSize(part)
 	if not part then return end
-    local saved = part.Size
-    local name = part.Name
-	if limbExtenderData._spoofTarget == name then return end
-	limbExtenderData._spoofTarget = name
-
-    pcall(function()
-		local mt = getrawmetatable(game)
-		setreadonly(mt, false)
-		local old = mt.__index
-		mt.__index = function(Self, Key)
-			if tostring(Self) == name and tostring(Key) == "Size" and not checkcaller() then
-				return saved
-			end
-			return old(Self, Key)
-		end
-		setreadonly(mt, true)
-	end)
+	-- [[ OPTIMIZATION: Simple Table Insert ]]
+	-- Instead of creating a new hook, we just tell the main hook "Spoof this part!"
+	if limbExtenderData.SpoofedParts then
+		limbExtenderData.SpoofedParts[part] = part.Size 
+	end
 end
 
 function PlayerData:setupCharacter(char)
@@ -232,8 +255,8 @@ function PlayerData:setupCharacter(char)
 
 	if parent:_isTeam(self.player) then return end
 
-	-- [[ RESPAWN FIX: Use WaitForChild instead of FindFirstChild ]]
-	local humanoid = char:WaitForChild("Humanoid", 10) 
+	-- [[ RESPAWN FIX: WaitForChild ]]
+	local humanoid = char:WaitForChild("Humanoid", 10)
 	if not humanoid or humanoid.Health <= 0 then return end
 
 	if self.PartStreamable and typeof(self.PartStreamable.Destroy) == "function" then
@@ -380,6 +403,12 @@ function LimbExtender:_isTeam(player)
 end
 
 function LimbExtender:Terminate(reason)
+	-- [[ CLEANUP: Clear spoofed parts ]]
+	if limbExtenderData.SpoofedParts then
+		for k in pairs(limbExtenderData.SpoofedParts) do
+			limbExtenderData.SpoofedParts[k] = nil
+		end
+	end
 
 	for k,v in pairs(limbExtenderData) do
 		if typeof(v) == "RBXScriptConnection" and v.Connected then v:Disconnect() end
@@ -458,6 +487,13 @@ function LimbExtender:Stop()
 	if not self._running then return end
 	self._running = false
 	limbExtenderData.running = false
+
+	-- Clear spoofed parts on stop so people return to normal for game scripts
+	if limbExtenderData.SpoofedParts then
+		for k in pairs(limbExtenderData.SpoofedParts) do
+			limbExtenderData.SpoofedParts[k] = nil
+		end
+	end
 
 	if self._connections then
 		self._connections:DisconnectAll()
